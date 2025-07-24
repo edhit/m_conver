@@ -1,196 +1,225 @@
 require("dotenv").config();
-const { Telegraf, Markup } = require("telegraf");
-const path = require("path");
-const fs = require("fs");
-const fetch = require("node-fetch");
-const NodeID3 = require("node-id3");
-const ffmpeg = require("fluent-ffmpeg");
-const ffmpegPath = require("ffmpeg-static");
-const surahs = require("./quran.json");
-
-// Установить путь для ffmpeg
-ffmpeg.setFfmpegPath(ffmpegPath);
+const { Telegraf, Markup } = require('telegraf');
+const axios = require('axios');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL;
-const TEMP_FOLDER = "./temp";
 
 // Инициализация бота
 const bot = new Telegraf(BOT_TOKEN);
 
-// Создать временную папку, если она отсутствует
-if (!fs.existsSync(TEMP_FOLDER)) {
-  fs.mkdirSync(TEMP_FOLDER);
-}
+const session = { conversion: null };
+const currencies = ['USD', 'SAR', 'RUB', 'AED', 'EGP', 'KGS', 'KZT', 'UZS', 'CNY', 'TRY'];
 
-// Утилиты
-function toHashtag(str) {
-  return (
-    "#" +
-    str
-      .toLowerCase()
-      .replace(/[^a-zа-яё0-9\s]/gi, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .join("#")
-  );
-}
-
-function clearTempFolder() {
-  fs.readdirSync(TEMP_FOLDER).forEach((file) => {
-    fs.unlinkSync(path.join(TEMP_FOLDER, file));
-  });
-}
-
-// Глобальные переменные
-const currentData = {
-  track: "",
-  text: "",
-  artist: "Mahmoud Al-Hosary",
-  color: "",
-  audioPath: "",
-  message: ""
-};
-
-// Команды
-bot.command("surah", (ctx) => {
-  const newTrack = ctx.message.text.replace("/surah", "").trim();
-  if (newTrack && !isNaN(newTrack)) {
-    currentData.track = newTrack;
-    ctx.reply(`Номер суры обновлен на: "${newTrack}"`);
-  } else {
-    ctx.reply("Пожалуйста, укажите корректный номер суры, например:\n`/surah 5`", {
-      parse_mode: "Markdown",
-    });
-  }
-});
-
-bot.command("clear_all", (ctx) => {
-  Object.assign(currentData, { track: "", text: "", color: "", audioPath: "" });
-  ctx.reply("Все данные успешно сброшены!");
-  clearTempFolder();
-});
-
-bot.on("text", (ctx) => {
-  const newText = ctx.message.text.trim();
-  if (newText) {
-    currentData.text = newText;
-    ctx.reply(`Текст успешно обновлен на: "${newText}"`);
-  } else {
-    ctx.reply("Пожалуйста, отправьте не пустое сообщение.");
-  }
-});
-
-bot.on("video", async (ctx) => {
+// Функция для получения курсов с обработкой ошибок
+async function getExchangeRates() {
   try {
-    if (!currentData.track || !currentData.text) {
-      return ctx.reply(
-        "Пожалуйста, заполните все данные перед загрузкой файла:\n- Номер суры (`/surah`)\n- Номер аята (отправьте текст)",
-      );
+    const response = await axios.get(
+      'https://docs.google.com/spreadsheets/u/0/d/e/2PACX-1vS1Nw9-rzL5zk8hvFsr8MkNwWypzVGZ6f9jNmmTnpIlssLZtTn4t4tkMsicQggg2vDsGCTxtAxTMSXl/pub?gid=0&single=true&output=csv',
+      { timeout: 5000 }
+    );
+
+    const rates = {};
+    const rows = response.data.split('\n').slice(1); // Пропускаем заголовок
+
+    for (const row of rows) {
+      if (!row.trim()) continue; // Пропускаем пустые строки
+      
+      try {
+        // Улучшенный парсинг с учетом возможных проблем формата
+        const [pair, rateStr] = row.split(',').map(item => item.trim());
+        
+        if (!pair || !rateStr) continue; // Пропускаем неполные строки
+
+        // Заменяем запятую на точку и удаляем все нечисловые символы кроме точки
+        const cleanRate = rateStr
+          .replace(',', '.')
+          .replace(/[^\d.-]/g, ''); // Удаляем все, кроме цифр, точки и минуса
+
+        const rate = parseFloat(cleanRate);
+        
+        if (!isNaN(rate)) {
+          rates[pair] = rate;
+        } else {
+          console.warn(`Не удалось распарсить курс для ${pair}: ${rateStr}`);
+        }
+      } catch (e) {
+        console.error(`Ошибка обработки строки: "${row}"`, e);
+      }
     }
-    let message = await ctx.reply('⏳');
 
-    const video = ctx.message.video;
-    const fileLink = await ctx.telegram.getFileLink(video.file_id);
-    const inputVideoPath = path.join(TEMP_FOLDER, `input_${video.file_id}.mp4`);
-    const outputAudioPath = path.join(TEMP_FOLDER, `audio_${video.file_id}.mp3`);
-
-    const response = await fetch(fileLink.href);
-    fs.writeFileSync(inputVideoPath, await response.buffer());
-
-    await new Promise((resolve, reject) => {
-      ffmpeg(inputVideoPath)
-        .output(outputAudioPath)
-        .noVideo()
-        .on("end", resolve)
-        .on("error", reject)
-        .run();
-    });
-
-    const tags = {
-      title: `Surah ${currentData.track} ${surahs[Number(currentData.track) - 1]?.name_en || "Unknown"} (${currentData.text})`,
-      artist: currentData.artist,
-      year: new Date().getFullYear(),
-    };
-
-    NodeID3.write(tags, outputAudioPath, (err) => {
-      if (err) throw new Error("Ошибка записи ID3 тегов.");
-    });
-
-    currentData.audioPath = outputAudioPath;
-    await ctx.deleteMessage(message.message_id);
-
-    await ctx.reply("Выберите цвет перед подтверждением:", {
-      ...Markup.inlineKeyboard([
-        ["🔵", "🟢", "🔴", "🟡"].map((emoji) => Markup.button.callback(emoji, `color_${emoji}`)),
-        ["🟣", "🟠", "🟥"].map((emoji) => Markup.button.callback(emoji, `color_${emoji}`)),
-      ]),
-    });
+    return rates;
   } catch (error) {
-    console.error("Ошибка обработки видео:", error);
-    ctx.reply("Произошла ошибка при обработке видео.");
-    clearTempFolder();
+    console.error('Ошибка при загрузке курсов:', error);
+    throw new Error('Не удалось загрузить курсы валют');
+  }
+}
+
+// Мидлвар для проверки id пользователя
+bot.use(async (ctx, next) => {
+  try {
+    const allowedId = process.env.ALLOWED_USER_ID;
+    const userId = ctx.from?.id?.toString();
+
+    if (!allowedId || !userId || userId !== allowedId) {
+      await ctx.reply('⛔️ Доступ запрещён.');
+      return;
+    }
+    await next();
+  } catch (error) {
+    console.error('Ошибка в middleware проверки ID:', error);
+    await ctx.reply('⚠️ Ошибка проверки доступа.');
   }
 });
 
-bot.action(/color_(.+)/, async (ctx) => {
+// Обработчик команды /start
+bot.start(async (ctx) => {
   try {
-    await ctx.deleteMessage();
-
-    const colorAction = ctx.match[1]; // Извлекаем значение из действия (например, "red", "blue" и т. д.)
-    currentData.color = colorAction;
-
-    const surahInfo = surahs[Number(currentData.track) - 1] || {}; // Получаем данные о суре
-    currentData.message = `${colorAction} Сура ${currentData.track} «${surahInfo.name_en} (${surahInfo.name_ru}), ${(currentData.text.includes("-")) ? "аяты" : "аят"} ${currentData.text}» - Махмуд Аль-Хусари\n\n#коран ${toHashtag(surahInfo.name_en)}`;
-
-    await ctx.replyWithAudio(
+    await ctx.reply(
+      '🔄 *Конвертер валют*\n\n' +
+      'Введите сумму и выберите валюты или используйте кнопки ниже:',
       {
-        source: currentData.audioPath,
-        filename: `${currentData.artist} - ${surahInfo.name_en} - ${currentData.text}.mp3`,
-      },
-      {
-        caption: `${currentData.message}`,
-        ...Markup.inlineKeyboard([
-          Markup.button.callback("✅ Отправить", "send_audio"),
-          Markup.button.callback("❌ Отменить", "cancel_audio"),
-        ]),
+        parse_mode: 'Markdown',
+        ...Markup.keyboard([
+          ['🔁 Конвертировать'],
+          ['📊 Список валют']
+        ]).resize()
       }
     );
   } catch (error) {
-    console.error("Ошибка в обработке действия:", error);
-    await ctx.reply("Произошла ошибка при обработке. Пожалуйста, попробуйте снова.");
+    console.error('Ошибка в /start:', error);
+    await ctx.reply('⚠️ Произошла ошибка. Пожалуйста, попробуйте позже.');
   }
 });
 
-
-
-bot.action("send_audio", async (ctx) => {
+// Обработчик кнопки "Список валют"
+bot.hears('📊 Список валют', async (ctx) => {
   try {
-    await ctx.deleteMessage();
-    if (!currentData.audioPath) return ctx.reply("Нет аудиофайла для отправки!");
-
-    await bot.telegram.sendAudio(CHANNEL_ID, {
-      source: currentData.audioPath,
-      filename: path.basename(currentData.audioPath),
-    }, {
-      caption: `${currentData.message}`,
-    });
-
-    ctx.reply("Аудиофайл успешно отправлен!");
-    clearTempFolder();
-    Object.assign(currentData, { track: "", text: "", color: "", audioPath: "", message: "" });
-  } catch (err) {
-    console.error("Ошибка отправки аудио:", err);
-    ctx.reply("Ошибка при отправке аудио.");
+    await ctx.reply(
+      '📋 *Доступные валюты:*\n\n' +
+      currencies.join(', '),
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    console.error('Ошибка в списке валют:', error);
+    await ctx.reply('⚠️ Не удалось загрузить список валют.');
   }
 });
 
-bot.action("cancel_audio", async (ctx) => {
-  await ctx.deleteMessage();
-  await ctx.reply("Отправка аудио отменена.");
-  clearTempFolder();
-  Object.assign(currentData, { audioPath: "", color: "", text: "", track: "" });
+// Обработчик кнопки "Конвертировать"
+bot.hears('🔁 Конвертировать', async (ctx) => {
+  try {
+    await ctx.reply(
+      'Выберите исходную валюту:',
+      Markup.inlineKeyboard(
+        currencies.map(currency => [Markup.button.callback(currency, `from_${currency}`)]),
+        { columns: 3 }
+      )
+    );
+  } catch (error) {
+    console.error('Ошибка в обработчике конвертации:', error);
+    await ctx.reply('⚠️ Произошла ошибка при выборе валюты.');
+  }
 });
 
-bot.launch().then(() => console.log("Бот запущен!"));
+// Обработчик выбора исходной валюты
+bot.action(/from_(.+)/, async (ctx) => {
+  try {
+    const fromCurrency = ctx.match[1];
+    await ctx.editMessageText(
+      `Выбрана валюта: *${fromCurrency}*\nТеперь выберите целевую валюту:`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard(
+          currencies
+            .filter(currency => currency !== fromCurrency)
+            .map(currency => [Markup.button.callback(currency, `to_${fromCurrency}_${currency}`)]),
+          { columns: 3 }
+        )
+      }
+    );
+  } catch (error) {
+    console.error('Ошибка при выборе исходной валюты:', error);
+    await ctx.reply('⚠️ Ошибка при выборе валюты. Попробуйте снова.');
+  }
+});
+
+// Обработчик выбора целевой валюты
+bot.action(/to_(.+)_(.+)/, async (ctx) => {
+  try {
+    const [_, fromCurrency, toCurrency] = ctx.match;
+    session.conversion = { fromCurrency, toCurrency };
+    await ctx.deleteMessage();
+    await ctx.reply(
+      `Введите сумму в *${fromCurrency}* для конвертации в *${toCurrency}*:\n\n` +
+      `Пример: *100*`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    console.error('Ошибка при выборе целевой валюты:', error);
+    await ctx.reply('⚠️ Ошибка при выборе валюты. Начните заново.');
+  }
+});
+
+// Обработчик ввода суммы
+bot.on('text', async (ctx) => {
+  try {
+    if (!session.conversion) return;
+
+    const amount = parseFloat(ctx.message.text);
+    if (isNaN(amount) || amount <= 0) {
+      return await ctx.reply('❌ Введите корректную сумму (число больше 0).');
+    }
+
+    const { fromCurrency, toCurrency } = session.conversion;
+    const rates = await getExchangeRates();
+
+    if (!rates) {
+      return await ctx.reply('⚠️ Не удалось загрузить курсы. Попробуйте позже.');
+    }
+
+    const directPair = `${fromCurrency}${toCurrency}`;
+    const reversePair = `${toCurrency}${fromCurrency}`;    
+
+    let result;
+    if (rates[directPair]) {
+      result = (amount * rates[directPair]).toFixed(2);
+    } else if (rates[reversePair]) {
+      result = (amount / rates[reversePair]).toFixed(2);
+    } else {
+      // Конвертация через USD
+      const usdFrom = rates[`USD${fromCurrency}`];
+      const usdTo = rates[`USD${toCurrency}`];
+      if (usdFrom && usdTo) {
+        result = ((amount / usdFrom) * usdTo).toFixed(2);
+      } else {
+        return await ctx.reply('❌ Курс для этих валют не найден.');
+      }
+    }
+
+    await ctx.replyWithMarkdown(
+      `💱 *Результат:*\n\n` +
+      `➖ *${amount} ${fromCurrency}* = *${result} ${toCurrency}*\n\n` +
+      `📊 *Курс:* 1 ${fromCurrency} = *${(result / amount).toFixed(6)} ${toCurrency}*`
+    );
+
+    delete session.conversion;
+  } catch (error) {
+    console.error('Ошибка при конвертации:', error);
+    await ctx.reply('⚠️ Произошла ошибка при конвертации. Попробуйте снова.');
+  }
+});
+
+// Обработка ошибок бота
+bot.catch((err, ctx) => {
+  console.error('Глобальная ошибка:', err);
+  ctx.reply('⚠️ Произошла критическая ошибка. Разработчик уже уведомлен.');
+});
+
+// Запуск бота
+bot.launch()
+  .then(() => console.log('Бот запущен!'))
+  .catch(err => console.error('Ошибка запуска бота:', err));
+
+// Обработка завершения процесса
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
