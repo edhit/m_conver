@@ -27,13 +27,13 @@ async function getExchangeRates() {
       try {
         // Улучшенный парсинг с учетом возможных проблем формата
         const [pair, rateStr] = row.split(',').map(item => item.trim());
+
+        // Извлекаем часть строки после кавычек
+        const valueStr = row.split('"')[1];
         
         if (!pair || !rateStr) continue; // Пропускаем неполные строки
 
-        // Заменяем запятую на точку и удаляем все нечисловые символы кроме точки
-        const cleanRate = rateStr
-          .replace(',', '.')
-          .replace(/[^\d.-]/g, ''); // Удаляем все, кроме цифр, точки и минуса
+        const cleanRate = parseFloat(valueStr.replace(',', '.'));          
 
         const rate = parseFloat(cleanRate);
         
@@ -45,8 +45,7 @@ async function getExchangeRates() {
       } catch (e) {
         console.error(`Ошибка обработки строки: "${row}"`, e);
       }
-    }
-
+    }    
     return rates;
   } catch (error) {
     console.error('Ошибка при загрузке курсов:', error);
@@ -196,12 +195,46 @@ bot.on('text', async (ctx) => {
       }
     }
 
-    await ctx.replyWithMarkdown(
-      `💱 *Результат:*\n\n` +
-      `➖ *${amount} ${fromCurrency}* = *${result} ${toCurrency}*\n\n` +
-      `📊 *Курс:* 1 ${fromCurrency} = *${(result / amount).toFixed(6)} ${toCurrency}*`
-    );
+await ctx.replyWithMarkdown(
+  `💎 *${amount} ${fromCurrency} → ${toCurrency}*\n` +
+  `╔══════════════════════════╗\n` +
+  `▎ Ввод:    ${amount.toLocaleString()} ${fromCurrency}\n` +
+  `▎ Вывод:   ${Number(result).toLocaleString()} ${toCurrency}\n` +
+  `╚══════════════════════════╝\n\n` +
 
+  `📊 *Курсы (${new Date().toLocaleDateString('ru-RU')})*\n` +
+  `▸ 1 ${fromCurrency} = *${(result/amount).toFixed(6)} ${toCurrency}*\n` +
+  `▸ 1 ${toCurrency} = *${(amount/result).toFixed(6)} ${fromCurrency}*\n\n` +
+
+  `🔄 Последнее обновление: ${new Date().toLocaleTimeString('ru-RU')}`
+);
+
+  // `🌍 *Другие конвертации:*\n` +
+  // currencies
+  //   .filter(cur => cur !== fromCurrency)
+  //   .map(cur => {
+  //     let rate, convResult;
+      
+  //     if (rates[`${fromCurrency}${cur}`]) {
+  //       rate = rates[`${fromCurrency}${cur}`];
+  //     } else if (rates[`${cur}${fromCurrency}`]) {
+  //       rate = 1 / rates[`${cur}${fromCurrency}`];
+  //     } else {
+  //       const usdFrom = rates[`USD${fromCurrency}`];
+  //       const usdTo = rates[`USD${cur}`];
+  //       rate = usdFrom && usdTo ? usdTo / usdFrom : null;
+  //     }
+
+  //     if (!rate) return `▸ ${fromCurrency} → ${cur}: данные отсутствуют`;
+
+  //     convResult = amount * rate;
+      
+  //     return `▸ ${fromCurrency} → ${cur}: *${convResult.toLocaleString(undefined, {
+  //       minimumFractionDigits: 2,
+  //       maximumFractionDigits: 6
+  //     })}* 📈 (${rate.toFixed(2)})`;
+  //   })
+  //   .join('\n') +
     delete session.conversion;
   } catch (error) {
     console.error('Ошибка при конвертации:', error);
